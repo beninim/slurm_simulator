@@ -1,0 +1,868 @@
+Preamble:
+---------
+
+        The Slurm Workload Simulator's aim is to provide a means of executing a set of jobs, a workload, in the Slurm system
+without executing actual programs.  The idea is to see how Slurm handles and schedules various workloads under different
+configurations.  For instance, an administrator may be interested to know how a job of a given size from a particular group
+will get scheduled given the current workload on that system.  He would be able to set up a simulator environment and with
+a workload representing that of the real system plus the hypothetical job, he could submit it to the simulator and see the
+working of Slurm, in this simulated environment, in faster than real-time.
+
+        The approach that had been initially taken to achieve this type of functionality and which has been kept and expanded
+upon is to speed up time and to allow just for the specifications of some of the Slurm job attributes but not any actual job
+steps.  From a user's perspective, he would create a trace (workload) file that contains the specifications for each job that
+is to be simulated and then start the simulator using this file as input.
+
+
+
+Entities:
+---------
+
+slurmctld [Modified]
+slurmd    [Modified]
+slurmdbd  [Modified]
+sim_mgr   [NEW]
+
+
+Running the Simulator:
+----------------------
+       The sim_mgr is the driver of the simulation.  It maintains the concept of simulated time and other
+pertinent values in shared memory.  It also, by default, will launch the slurmctld and slurmd's.
+
+        sim_mgr [endtime] [OPTIONS]
+                Valid OPTIONS are:
+              -c, --compath cpath      'cpath' is the path to the slurmctld and slurmd
+                                       (applicable only if launching daemons).  
+                                       Specification of this option supersedes any 
+                                       setting of SIM_DAEMONS_PATH.  If neither is 
+                                       specified then the sim_mgr looks in a sibling 
+                                       directory of where it resides called sbin.
+                                       Finally, if still not found then the default
+                                       is /sbin.
+              -n, --nofork             Do NOT fork the controller and daemons.  The
+                                       user will be responsible for starting them
+                                       separately.
+              -a, --accelerator secs   'secs' is the interval, in simulated seconds, 
+                                       to increment the simulated time after each 
+                                       cycle instead of merely one.
+              -w, --wrkldfile filename 'filename' is the name of the trace file 
+                                       containing the information of the jobs to 
+                                       simulate.
+              -s, --nodenames nodeexpr 'nodeexpr' is an expression representing all 
+                                       of the slurmd names to use when launching the 
+                                       daemons--should correspond exactly with what 
+                                       is defined in the slurm.conf.
+              -h, --help               This help message.
+        Notes:
+              'endtime' is specified as seconds since Unix epoch. If 0 is specified 
+              then the simulator will run indefinitely.
+        
+              The debug level can be increased by sending the SIGUSR1 signal to 
+              the sim_mgr.
+                         $ kill -SIGUSR1 `pidof sim_mgr`
+              The debug level will be incremented by one with each signal sent, 
+              wrapping back to zero after eight.
+
+Example 1:
+        To run a simulation with the default trace file name (test.trace) where the Slurm configuration simply specifies
+        a single slurmd:
+                $ sim_mgr
+
+Example 2:
+        To run a simulation with a trace file in some directory called /home/someuser/workload.trace where the Slurm
+        configuration simply specifies a single slurmd:
+                $ sim_mgr -w /home/someuser/workload.trace
+
+Example 3:
+        To launch the simulation with a trace file called "workload.trace" and with a Slurm configuration that specifies
+        five front-ends named "node1,""node2,""node3,""node4" and "node5;" one possible command line would be:
+                $ sim_mgr -w workload.trace -s node[1-5]
+
+Example 4:
+        To run the same job as above but with a speed-up factor of 100:
+                $ sim_mgr -w workload.trace -s node[1-5] -a 100
+
+
+Monitoring Status of a Running Simulation:
+------------------------------------------
+        Being that as part of the simulation, an instance of Slurm is running (slurmctld), the normal Slurm commands such
+as "squeue" and "scontrol" can be used to see the status of the queue and the jobs that are in it.  Additionally, the
+Simulator-specific command "simdate" is provided as a means to view the date/time stamp of the simulation.  The original
+intention of this command was to be the Simulator's equivalent of the "date" command so that, at any given moment, the user
+would know at what "time" the simulator is currently at.  However, the command has evolved to also include the ability
+to view all the fields of the special shared memory segment and to even allow the altering of a few of them.
+
+        simdate [OPTIONS]
+                  -s, --showmem             Display contents of shared memory
+                  -i, --timeincr seconds    Increment simulated time by 'seconds'
+                  -f, --flag 1-n            Set the global synchronization flag
+                  -h, --help                This help message
+
+
+        Notes: The simdate command's primary function is to
+        display the current simulated time.  If, no arguments are
+        given, then this is the output.  However, it also serves to
+        both display the synchronization semaphore value
+        and the contents of the shared memory segment.
+        Furthermore, it can increment the simulated time and set
+        the global sync flag.
+
+Example 1:
+        To simply display the current date/time stamp of the Simulator:
+                $ simdate
+
+Example 2:
+        Display the entire contents of the shared memory segment:
+                $ simdate -s
+
+Example 3:
+        Increase the simulator's time by three minutes and display memory:
+                $ simdate -s -i 180
+
+Example 4:
+        Manually set the global synchronization flag to three:
+                $ simdate -f 3
+
+Note:  Manually altering the contents of the shared memory could lead to unexpected results and should be done
+with caution.
+        * The time can actually accept negative values and consequently be set backwards.  However, this does
+not roll any jobs back.  It is recommended not to set the time backwards.
+        * The global sync flag pertains to how the slurmctld and slurmd's coordinate with the sim_mgr.  It is
+currently a simple mechanism by which a global flag is maintained in the shared memory.  When the value is 1,
+it is the turn of the sim_mgr to do what it needs in the given cycle.  Once it is finished with its work for
+the cycle it increments the value to 2 and at this point, the slurmctld and slurmd's can all function as they
+otherwise normally would, each incrementing the flag once it is done with its work for the given cycle until
+it reaches 1 + slurmd_count.  The final daemon to increment will set the value back to 1, indicating that once
+again it is the sim_mgr's turn.  The precise values that are acceptable depend upon how many daemons are
+running. If there is only one slurmd, then it should be 1-3.  If there are five slurmd's running, as in
+some of the above examples, then it would be 1-6.  If the sim_mgr had been previously run, then the help
+command for simdate will actually display the acceptable range based upon the currently configured number of
+slurmd's according to the shared memory segment.  This field should only be manually modified if there is a
+problem where the simulator gets stuck and the user of the simulator wants to experiment to see what would
+happen if he forces a change in state.  It is not recommended for normal simulation.
+
+        * The slurmd_pid field in the shared memory segment currently only shows the pid of one slurmd.  Thus,
+if there are more than one slurmd executing than only one would be displayed.  Use normal "pidof" or "ps"
+commands to see the pid's of the other slurmd's.  This field is only for informational purposes and is non-essential
+to the execution of the simulator.
+
+        Finally, normal system monitoring commands such as "ps" can always be used to see how the system is
+behaving during the simulation.  For our part, we like to use the "pidof" command to list the pids of the various
+entities and to script the use of the "ps -eLF" command so that we can see all of the threads of the various
+entities running at any given time.
+
+
+Creating a Workload Trace File:
+-------------------------------
+        There are three general methods of creating a workload trace file.  The original method is to create
+a completely "synthetic" workload.  The second method is to take a "snapshot" of actual running Slurm system
+and the third is to take historical job information from the Slurm DB.
+
+trace_builder:   Builds a generic workload trace file.
+        Usage: trace_builder [OPTIONS]
+          -c <cpus_per_task>,             The number of CPU's per task
+          -d <duration>,                  The number of seconds that each job will run
+          -i <id_start>,                  The first jobid.  All subsequent jobid's will
+                                          be one greater than the previous.
+          -l <number_of_jobs>,            The number of jobs to create in the trace file
+          -n <tasks_per_node>,            The maximum number of tasks that a job is to
+                                          have per node.
+          -o <output_file>,               Specifies a different output file name.  
+                                          Default is simple.trace
+          -r,                             The random argument.  This specifies to use 
+                                          random values for duration, tasks_per_node, 
+                                          cpus_per_task and tasks.  This option takes
+                                          no argument.
+          -s <submission_step>,           The amount of time, in seconds, between 
+                                          submission times of jobs.
+          -S <initial timestamp>,         The initial time stamp to use for the first
+                                          job of the workload in lieu of the default.
+                                          This must be in Unix epoch time format.
+          -t <tasks>,                     The number of tasks that a job is to have.
+          -u <user.sim_file>,             The name of the text file containing a list 
+                                          of users and their system id's.
+        
+          NOTES: If not specified in conjunction with the -r (random) option, the
+          following options will have the following default values used in the
+          computation of the upper bound of the random number range:
+                        duration = 1
+                        tasks    = 10
+                        tasks_per_node = 8
+                        cpus_per_task = 10 
+          If not specified but still using the random option, the upper bounds will
+          be based upon arbitrary default values.
+          ... The wall clock value will be set to always be greater than the duration.
+          ... If using the random option, there is no guarantee that the combination
+          of cpus_per_task and tasks_per_node will be valid for the system being
+          emulated.  Therefore, it is up to the user to use the -c and -n optons with
+          such values that the resultant product could never exceed the number of
+          of processors on the emulated nodes or the user will have to edit the
+          trace file after creating it.
+Example:
+        Build a workload trace named "new.trace" with ten jobs, all beginning at 1459000000
+        (26-March-2016 14:46:40).
+        $ trace_builder -u /slurm_install/slurm_conf/users.sim -o new.trace -l 10 -S 1459000000
+
+
+
+mysql_trace_builder:  Builds the workload trace file from the Slurm database (when using MySQL as the database).
+
+        Usage: mysql_trace_builder [OPTIONS]
+            -s, --starttime time            Start selecting jobs from this time
+                                            format: "yyyy-MM-DD hh:mm:ss"
+            -e, --endtime   time            Stop selecting jobs at this time
+                                            format: "yyyy-MM-DD hh:mm:ss"
+            -h, --host      db_hostname     Name of machine hosting MySQL DB
+            -u, --user      dbuser          Name of user with which to establish a
+                                            connection to the DB
+            -t, --table     db_table        Name of the MySQL table to query
+            -v, --verbose                   Increase verbosity of the messages
+            -f, --file      filename        Name of the output trace file being created
+            -p, --help                      This help message
+
+
+
+simqsnap:  Builds a workload trace file from a currently running Slurm system.  All jobs in the queue are recorded.
+        The end time is currently assumed to be the time limit as it is not known how long a currently running or
+        pending job will actually take.  As with all trace files, this field can be edited with the "edit_trace"
+        command.
+
+        Usage: simqsnap [OPTIONS]
+            -o, --output file         The name of the workload trace file to produce.
+            -d, --duration_method num Number representing the method of determining
+                                      the expected end time of the job.
+                                      1 = random time length (1-max time for job)
+                                      2 = amount of time that the job had been 
+                                          running on the real system at snapshot time
+                                          If pending, then use expected time.
+                                      3 = Expected time (the time limit or wclimit)
+                                          if not finished--Default
+                                          (Note: finished jobs don't typically
+                                          linger long in the queue)
+            -h, --help                This help message
+
+Example 1:
+        Create a workload file (test.trace) based upon a currently running Slurm system using the expected
+        time of each job as its duration.
+                $ simqsnap
+
+Example 2:
+        Create a workload file (new.trace) based upon a currently running Slurm system using a random
+        value for each job's duration in the range of 0 and its expected time.
+                $ simqsnap -o new.trace -d 1
+
+
+Viewing a Workload Trace File:
+------------------------------
+        Being that the workload file is in binary format, the list_view command is provided to quickly
+display its contents.
+        list_trace [OPTIONS]
+            -w, --wrkldfile filename      The name of the trace file to view
+            -u, --unixtime                Display submit time in Unix epoch format
+                                          Default
+            -r, --humantime               Display submit time in a human-readable
+                                          format (YYYY-MM-DD hh:mm:ss)
+            -h, --help                    This help message.
+
+Example:
+        Display the contents of a workload file called "my.trace".
+                $ list_trace -w my.trace
+
+Example:
+        Display the contents of a workload file called "my.trace" with the submission time in human-readable
+        format.
+                $ list_trace -w my.trace -r
+
+
+
+Editing a Workload Trace File:
+------------------------------
+        Once you have a trace file, it will be quite useful to edit the file in various ways so as to experiment
+with slightly different workloads.  As the trace file is in a binary format, it would be difficult to edit
+directly.   Therefore, a tool called "edit_trace" is available.  It works by allowing the user to select one or
+more records, each corresponding to a single job, and then to apply one or more modifications to these records.
+It also allows for the deletion and insertion of specified records and for the sorting (in ascending
+chronological order) of all records.
+
+        edit_trace [OPTIONS]
+          -j, --job_id             jobid Select records with job_id=joid
+          -u, --username           name  Select records with username=name
+          -s, --submit             time  Select records with submit=time
+          -d, --duration           secs  Select records with duration=secs
+          -w, --wclimit            timeh Select records with wclimit=timeh
+          -t, --tasks              num   Select records with tasks=num
+          -q, --qosname            qos   Select records with qosname=qos
+          -p, --partition          par   Select records with partition=par
+          -a, --account            acc   Select records with account=acc
+          -c, --cpus_per_task      cpt   Select records with cpus_per_task=cpt
+          -n, --tasks_per_node     tpn   Select records with tasks_per_node=tpn
+          -r, --reservation        res   Select records with reservation=res
+          -e, --dependency         dep   Select records with dependency=dep
+          -x, --index              idx   Select record number idx
+          -J, --new_job_id         jobid Set job_id to jobid in all matched records
+          -U, --new_username       name  Set username to name in all matched records
+          -S, --new_submit         time  Set submit to time in all matched records
+          -D, --new_duration       secs  Set duration to secs in all matched records
+          -W, --new_wclimit        timeh Set wclimit to timeh in all matched records
+          -T, --new_tasks          num   Set tasks to num in all matched records
+          -Q, --new_qosname        qos   Set qosname to qos in all matched records
+          -P, --new_partition      par   Set partition to par in all matched records
+          -A, --new_account        acc   Set account to acc in all matched records
+          -C, --new_cpus_per_task  cpt   Set cpus_per_task to cpt in all matched
+                                         records
+          -N, --new_tasks_per_node tpn   Set tasks_per_node to tpn in all matched
+                                         records
+          -R, --new_reservation    res   Set reservation to res in all matched records
+          -E, --new_dependency     dep   Set dependency to dep in all matched records
+          -X, --remove_jobs              Delete all matched records
+          -h, --help                     This help message
+          -i, --wrkldfile          name  Name of the trace file to edit
+          -I, --insert                   Insert a record after each matched record
+          -O, --sort                     Sort all records in ascending
+                                         chronological order
+
+
+        Notes:  The edit_trace utility consists of two general sets of options.
+                The first is the set of all options used to specify which existing
+                records to select.  These have lower-case short options.  The second
+                is the set of all options used to specify what the new values should
+                be.  These have capital-case short options and their long forms are
+                prefixed with 'new_'.
+                If sorting, all other edits are performed first and then the result
+                is sorted.
+                Job id's will be out-of-order after chronological sort.
+
+        As can be seen, records can be selected based upon any of its fields and any field can
+be modified.  In general, lower case options are for selecting records based on a particular field
+and the corresponding capital letter is for setting a new value for that field on all records
+matched.  Exceptions include:
+        -x which selects a single record based upon its index within the file
+        -X which states to delete all records that are matched
+        -i which specifies the name of the trace file to use
+        -I which states to insert a record (which is initially a duplicate) of each record that is matched
+        -O which states to sort all records (of the file).
+Please beware that the edit_trace command is "destructive" in that it overwrites the contents of
+the original input file once done.  Therefore, if the original file is still needed, please MAKE A COPY
+before executing the edit_trace command!!!
+
+Example 1:
+        Select all jobs with a partition value of "short" and change it to a partition called "long".
+                $ edit_trace -p "short" -P "long"
+
+Example 2:
+        Same as above but we will also set the duration to 1000.
+                $ edit_trace -p "short" -P "long" -D 1000
+
+Example 3:
+        Sort all records of the file.
+                $ edit_trace -O
+
+Example 4:
+        Insert a new record after record #42 in file "/home/user1/workload.trace", setting the job id to 12345
+        and the user to "user2".
+                $ edit_trace -i /home/user1/workload.trace -x 42 -J 12345 -U user2
+
+NOTE:  If supplying just the target jobid for a dependency, the dependency will be treated as "afterany."
+       Therefore, to specify other dependency types, the user can write out the full dependecy,
+       e.g. "edit_trace -E afterok:12345".
+NOTE:  To remove a dependency, reservation, partition or an account, provide a value that starts with a space,
+       e.g. 'edit_trace -E " "'  will clear the dependency field.
+
+
+        In addition to edit_trace, an older and much more restrictive command is "update_trace".
+This command only works on files called test.trace and only allows for the setting of a dependency or
+reservation for the given job (only operates on single jobs).  The edit_trace command above provides the
+same functionality and much more; hence, this command is superseded.
+
+        Usage: [This command is deprecated.  Use edit_trace]
+        update_trace [OPTIONS]
+              -R, --reservation           States to perform a reservation update
+              -D, --dependency            States to perform a dependency update
+              -n, --rsv_name     name     Name of reservation to use
+              -j, --jobid        jid      Select job 'jid' to modify
+              -r, --ref_jobid    rjid     Set 'rjid' as the target dependency
+              -a, --account
+              -h, --help                  This help message
+        Notes:  There are two general formats, one for a dependency update and one
+                for reservation updates.
+                update_trace [-D | --dependency] [-j | --jobid] [-r | --ref_jobid]>
+                      -- Or --
+                update_trace [-R | --reservation] [-n | --rsv_name] [-j | --jobid]
+                             [-a | --account]
+
+        Command needs to specify reservation or dependency action
+
+
+
+
+Example 1:
+        To update jobid 538330 to be dependent upon jobid 538321.
+                $ update_trace --dependency --jobid=538330 --ref_jobid=538321
+NOTE: All job dependencies are currently treated as being of type "afterany".
+
+Example 2:
+        To update the job record of test.trace with jobid of 538330 to belong to the "maint_reservation using account "test"
+                $ update_trace --reservation --jobid=538330 --rsv_name=maint_reservation --account=test
+
+
+
+Preparing the Slurm source code:
+--------------------------------
+* Download Slurm 15.08.6
+* Using the quilt command, apply the simulator patch
+* Copy the new files into the appropriate locations:
+        * Copy sim_events.h to .../src/slurmd/slurmd
+        * Copy sim_funcs.h, sim_funcs.c and slurm_sim.h to .../src/common
+        * Copy directory "simulator" to .../contribs
+
+
+Building the Slurm Simulator Source Code:
+-----------------------------------------
+        Assuming that you have already patched Slurm and placed the new files in the appropriate directories,
+the build process is essentially the same as usual with the following additions:
+        * export LIBS=-lrt
+        * export CFLAGS="-D SLURM_SIMULATOR"
+If running multiple slurmd's on single node, as always, remember to use the "--enable-multiple_slurmd" option
+to the Slurm configure script.
+
+        * Run the Slurm configure script (with all appropriate options as usual).
+        * Run make.
+        * Run make install
+        * cd the .../contribs/simulator directory
+        * Run make
+        * Run make install
+
+Preamble:
+---------
+
+        The Slurm Workload Simulator's aim is to provide a means of executing a set of jobs, a workload, in the Slurm system
+without executing actual programs.  The idea is to see how Slurm handles and schedules various workloads under different
+configurations.  For instance, an administrator may be interested to know how a job of a given size from a particular group
+will get scheduled given the current workload on that system.  He would be able to set up a simulator environment and with
+a workload representing that of the real system plus the hypothetical job, he could submit it to the simulator and see the
+working of Slurm, in this simulated environment, in faster than real-time.
+
+        The approach that had been initially taken to achieve this type of functionality and which has been kept and expanded
+upon is to speed up time and to allow just for the specifications of some of the Slurm job attributes but not any actual job
+steps.  From a user's perspective, he would create a trace (workload) file that contains the specifications for each job that
+is to be simulated and then start the simulator using this file as input.
+
+
+
+Entities:
+---------
+
+slurmctld [Modified]
+slurmd    [Modified]
+slurmdbd  [Modified]
+sim_mgr   [NEW]
+
+
+Running the Simulator:
+----------------------
+       The sim_mgr is the driver of the simulation.  It maintains the concept of simulated time and other
+pertinent values in shared memory.  It also, by default, will launch the slurmctld and slurmd's.
+
+        sim_mgr [endtime] [OPTIONS]
+                Valid OPTIONS are:
+              -c, --compath cpath      'cpath' is the path to the slurmctld and slurmd
+                                       (applicable only if launching daemons).  
+                                       Specification of this option supersedes any 
+                                       setting of SIM_DAEMONS_PATH.  If neither is 
+                                       specified then the sim_mgr looks in a sibling 
+                                       directory of where it resides called sbin.
+                                       Finally, if still not found then the default
+                                       is /sbin.
+              -n, --nofork             Do NOT fork the controller and daemons.  The
+                                       user will be responsible for starting them
+                                       separately.
+              -a, --accelerator secs   'secs' is the interval, in simulated seconds, 
+                                       to increment the simulated time after each 
+                                       cycle instead of merely one.
+              -w, --wrkldfile filename 'filename' is the name of the trace file 
+                                       containing the information of the jobs to 
+                                       simulate.
+              -s, --nodenames nodeexpr 'nodeexpr' is an expression representing all 
+                                       of the slurmd names to use when launching the 
+                                       daemons--should correspond exactly with what 
+                                       is defined in the slurm.conf.
+              -h, --help               This help message.
+        Notes:
+              'endtime' is specified as seconds since Unix epoch. If 0 is specified 
+              then the simulator will run indefinitely.
+        
+              The debug level can be increased by sending the SIGUSR1 signal to 
+              the sim_mgr.
+                         $ kill -SIGUSR1 `pidof sim_mgr`
+              The debug level will be incremented by one with each signal sent, 
+              wrapping back to zero after eight.
+
+Example 1:
+        To run a simulation with the default trace file name (test.trace) where the Slurm configuration simply specifies
+        a single slurmd:
+                $ sim_mgr
+
+Example 2:
+        To run a simulation with a trace file in some directory called /home/someuser/workload.trace where the Slurm
+        configuration simply specifies a single slurmd:
+                $ sim_mgr -w /home/someuser/workload.trace
+
+Example 3:
+        To launch the simulation with a trace file called "workload.trace" and with a Slurm configuration that specifies
+        five front-ends named "node1,""node2,""node3,""node4" and "node5;" one possible command line would be:
+                $ sim_mgr -w workload.trace -s node[1-5]
+
+Example 4:
+        To run the same job as above but with a speed-up factor of 100:
+                $ sim_mgr -w workload.trace -s node[1-5] -a 100
+
+
+Monitoring Status of a Running Simulation:
+------------------------------------------
+        Being that as part of the simulation, an instance of Slurm is running (slurmctld), the normal Slurm commands such
+as "squeue" and "scontrol" can be used to see the status of the queue and the jobs that are in it.  Additionally, the
+Simulator-specific command "simdate" is provided as a means to view the date/time stamp of the simulation.  The original
+intention of this command was to be the Simulator's equivalent of the "date" command so that, at any given moment, the user
+would know at what "time" the simulator is currently at.  However, the command has evolved to also include the ability
+to view all the fields of the special shared memory segment and to even allow the altering of a few of them.
+
+        simdate [OPTIONS]
+                  -s, --showmem             Display contents of shared memory
+                  -i, --timeincr seconds    Increment simulated time by 'seconds'
+                  -f, --flag 1-n            Set the global synchronization flag
+                  -h, --help                This help message
+
+
+        Notes: The simdate command's primary function is to
+        display the current simulated time.  If, no arguments are
+        given, then this is the output.  However, it also serves to
+        both display the synchronization semaphore value
+        and the contents of the shared memory segment.
+        Furthermore, it can increment the simulated time and set
+        the global sync flag.
+
+Example 1:
+        To simply display the current date/time stamp of the Simulator:
+                $ simdate
+
+Example 2:
+        Display the entire contents of the shared memory segment:
+                $ simdate -s
+
+Example 3:
+        Increase the simulator's time by three minutes and display memory:
+                $ simdate -s -i 180
+
+Example 4:
+        Manually set the global synchronization flag to three:
+                $ simdate -f 3
+
+Note:  Manually altering the contents of the shared memory could lead to unexpected results and should be done
+with caution.
+        * The time can actually accept negative values and consequently be set backwards.  However, this does
+not roll any jobs back.  It is recommended not to set the time backwards.
+        * The global sync flag pertains to how the slurmctld and slurmd's coordinate with the sim_mgr.  It is
+currently a simple mechanism by which a global flag is maintained in the shared memory.  When the value is 1,
+it is the turn of the sim_mgr to do what it needs in the given cycle.  Once it is finished with its work for
+the cycle it increments the value to 2 and at this point, the slurmctld and slurmd's can all function as they
+otherwise normally would, each incrementing the flag once it is done with its work for the given cycle until
+it reaches 1 + slurmd_count.  The final daemon to increment will set the value back to 1, indicating that once
+again it is the sim_mgr's turn.  The precise values that are acceptable depend upon how many daemons are
+running. If there is only one slurmd, then it should be 1-3.  If there are five slurmd's running, as in
+some of the above examples, then it would be 1-6.  If the sim_mgr had been previously run, then the help
+command for simdate will actually display the acceptable range based upon the currently configured number of
+slurmd's according to the shared memory segment.  This field should only be manually modified if there is a
+problem where the simulator gets stuck and the user of the simulator wants to experiment to see what would
+happen if he forces a change in state.  It is not recommended for normal simulation.
+
+        * The slurmd_pid field in the shared memory segment currently only shows the pid of one slurmd.  Thus,
+if there are more than one slurmd executing than only one would be displayed.  Use normal "pidof" or "ps"
+commands to see the pid's of the other slurmd's.  This field is only for informational purposes and is non-essential
+to the execution of the simulator.
+
+        Finally, normal system monitoring commands such as "ps" can always be used to see how the system is
+behaving during the simulation.  For our part, we like to use the "pidof" command to list the pids of the various
+entities and to script the use of the "ps -eLF" command so that we can see all of the threads of the various
+entities running at any given time.
+
+
+Creating a Workload Trace File:
+-------------------------------
+        There are three general methods of creating a workload trace file.  The original method is to create
+a completely "synthetic" workload.  The second method is to take a "snapshot" of actual running Slurm system
+and the third is to take historical job information from the Slurm DB.
+
+trace_builder:   Builds a generic workload trace file.
+        Usage: trace_builder [OPTIONS]
+          -c <cpus_per_task>,             The number of CPU's per task
+          -d <duration>,                  The number of seconds that each job will run
+          -i <id_start>,                  The first jobid.  All subsequent jobid's will
+                                          be one greater than the previous.
+          -l <number_of_jobs>,            The number of jobs to create in the trace file
+          -n <tasks_per_node>,            The maximum number of tasks that a job is to
+                                          have per node.
+          -o <output_file>,               Specifies a different output file name.  
+                                          Default is simple.trace
+          -r,                             The random argument.  This specifies to use 
+                                          random values for duration, tasks_per_node, 
+                                          cpus_per_task and tasks.  This option takes
+                                          no argument.
+          -s <submission_step>,           The amount of time, in seconds, between 
+                                          submission times of jobs.
+          -S <initial timestamp>,         The initial time stamp to use for the first
+                                          job of the workload in lieu of the default.
+                                          This must be in Unix epoch time format.
+          -t <tasks>,                     The number of tasks that a job is to have.
+          -u <user.sim_file>,             The name of the text file containing a list 
+                                          of users and their system id's.
+        
+          NOTES: If not specified in conjunction with the -r (random) option, the
+          following options will have the following default values used in the
+          computation of the upper bound of the random number range:
+                        duration = 1
+                        tasks    = 10
+                        tasks_per_node = 8
+                        cpus_per_task = 10 
+          If not specified but still using the random option, the upper bounds will
+          be based upon arbitrary default values.
+          ... The wall clock value will be set to always be greater than the duration.
+          ... If using the random option, there is no guarantee that the combination
+          of cpus_per_task and tasks_per_node will be valid for the system being
+          emulated.  Therefore, it is up to the user to use the -c and -n optons with
+          such values that the resultant product could never exceed the number of
+          of processors on the emulated nodes or the user will have to edit the
+          trace file after creating it.
+Example:
+        Build a workload trace named "new.trace" with ten jobs, all beginning at 1459000000
+        (26-March-2016 14:46:40).
+        $ trace_builder -u /slurm_install/slurm_conf/users.sim -o new.trace -l 10 -S 1459000000
+
+
+
+mysql_trace_builder:  Builds the workload trace file from the Slurm database (when using MySQL as the database).
+
+        Usage: mysql_trace_builder [OPTIONS]
+            -s, --starttime time            Start selecting jobs from this time
+                                            format: "yyyy-MM-DD hh:mm:ss"
+            -e, --endtime   time            Stop selecting jobs at this time
+                                            format: "yyyy-MM-DD hh:mm:ss"
+            -h, --host      db_hostname     Name of machine hosting MySQL DB
+            -u, --user      dbuser          Name of user with which to establish a
+                                            connection to the DB
+            -t, --table     db_table        Name of the MySQL table to query
+            -v, --verbose                   Increase verbosity of the messages
+            -f, --file      filename        Name of the output trace file being created
+            -p, --help                      This help message
+
+
+
+simqsnap:  Builds a workload trace file from a currently running Slurm system.  All jobs in the queue are recorded.
+        The end time is currently assumed to be the time limit as it is not known how long a currently running or
+        pending job will actually take.  As with all trace files, this field can be edited with the "edit_trace"
+        command.
+
+        Usage: simqsnap [OPTIONS]
+            -o, --output file         The name of the workload trace file to produce.
+            -d, --duration_method num Number representing the method of determining
+                                      the expected end time of the job.
+                                      1 = random time length (1-max time for job)
+                                      2 = amount of time that the job had been 
+                                          running on the real system at snapshot time
+                                          If pending, then use expected time.
+                                      3 = Expected time (the time limit or wclimit)
+                                          if not finished--Default
+                                          (Note: finished jobs don't typically
+                                          linger long in the queue)
+            -h, --help                This help message
+
+Example 1:
+        Create a workload file (test.trace) based upon a currently running Slurm system using the expected
+        time of each job as its duration.
+                $ simqsnap
+
+Example 2:
+        Create a workload file (new.trace) based upon a currently running Slurm system using a random
+        value for each job's duration in the range of 0 and its expected time.
+                $ simqsnap -o new.trace -d 1
+
+
+Viewing a Workload Trace File:
+------------------------------
+        Being that the workload file is in binary format, the list_view command is provided to quickly
+display its contents.
+        list_trace [OPTIONS]
+            -w, --wrkldfile filename      The name of the trace file to view
+            -u, --unixtime                Display submit time in Unix epoch format
+                                          Default
+            -r, --humantime               Display submit time in a human-readable
+                                          format (YYYY-MM-DD hh:mm:ss)
+            -h, --help                    This help message.
+
+Example:
+        Display the contents of a workload file called "my.trace".
+                $ list_trace -w my.trace
+
+Example:
+        Display the contents of a workload file called "my.trace" with the submission time in human-readable
+        format.
+                $ list_trace -w my.trace -r
+
+
+
+Editing a Workload Trace File:
+------------------------------
+        Once you have a trace file, it will be quite useful to edit the file in various ways so as to experiment
+with slightly different workloads.  As the trace file is in a binary format, it would be difficult to edit
+directly.   Therefore, a tool called "edit_trace" is available.  It works by allowing the user to select one or
+more records, each corresponding to a single job, and then to apply one or more modifications to these records.
+It also allows for the deletion and insertion of specified records and for the sorting (in ascending
+chronological order) of all records.
+
+        edit_trace [OPTIONS]
+          -j, --job_id             jobid Select records with job_id=joid
+          -u, --username           name  Select records with username=name
+          -s, --submit             time  Select records with submit=time
+          -d, --duration           secs  Select records with duration=secs
+          -w, --wclimit            timeh Select records with wclimit=timeh
+          -t, --tasks              num   Select records with tasks=num
+          -q, --qosname            qos   Select records with qosname=qos
+          -p, --partition          par   Select records with partition=par
+          -a, --account            acc   Select records with account=acc
+          -c, --cpus_per_task      cpt   Select records with cpus_per_task=cpt
+          -n, --tasks_per_node     tpn   Select records with tasks_per_node=tpn
+          -r, --reservation        res   Select records with reservation=res
+          -e, --dependency         dep   Select records with dependency=dep
+          -x, --index              idx   Select record number idx
+          -J, --new_job_id         jobid Set job_id to jobid in all matched records
+          -U, --new_username       name  Set username to name in all matched records
+          -S, --new_submit         time  Set submit to time in all matched records
+          -D, --new_duration       secs  Set duration to secs in all matched records
+          -W, --new_wclimit        timeh Set wclimit to timeh in all matched records
+          -T, --new_tasks          num   Set tasks to num in all matched records
+          -Q, --new_qosname        qos   Set qosname to qos in all matched records
+          -P, --new_partition      par   Set partition to par in all matched records
+          -A, --new_account        acc   Set account to acc in all matched records
+          -C, --new_cpus_per_task  cpt   Set cpus_per_task to cpt in all matched
+                                         records
+          -N, --new_tasks_per_node tpn   Set tasks_per_node to tpn in all matched
+                                         records
+          -R, --new_reservation    res   Set reservation to res in all matched records
+          -E, --new_dependency     dep   Set dependency to dep in all matched records
+          -X, --remove_jobs              Delete all matched records
+          -h, --help                     This help message
+          -i, --wrkldfile          name  Name of the trace file to edit
+          -I, --insert                   Insert a record after each matched record
+          -O, --sort                     Sort all records in ascending
+                                         chronological order
+
+
+        Notes:  The edit_trace utility consists of two general sets of options.
+                The first is the set of all options used to specify which existing
+                records to select.  These have lower-case short options.  The second
+                is the set of all options used to specify what the new values should
+                be.  These have capital-case short options and their long forms are
+                prefixed with 'new_'.
+                If sorting, all other edits are performed first and then the result
+                is sorted.
+                Job id's will be out-of-order after chronological sort.
+
+        As can be seen, records can be selected based upon any of its fields and any field can
+be modified.  In general, lower case options are for selecting records based on a particular field
+and the corresponding capital letter is for setting a new value for that field on all records
+matched.  Exceptions include:
+        -x which selects a single record based upon its index within the file
+        -X which states to delete all records that are matched
+        -i which specifies the name of the trace file to use
+        -I which states to insert a record (which is initially a duplicate) of each record that is matched
+        -O which states to sort all records (of the file).
+Please beware that the edit_trace command is "destructive" in that it overwrites the contents of
+the original input file once done.  Therefore, if the original file is still needed, please MAKE A COPY
+before executing the edit_trace command!!!
+
+Example 1:
+        Select all jobs with a partition value of "short" and change it to a partition called "long".
+                $ edit_trace -p "short" -P "long"
+
+Example 2:
+        Same as above but we will also set the duration to 1000.
+                $ edit_trace -p "short" -P "long" -D 1000
+
+Example 3:
+        Sort all records of the file.
+                $ edit_trace -O
+
+Example 4:
+        Insert a new record after record #42 in file "/home/user1/workload.trace", setting the job id to 12345
+        and the user to "user2".
+                $ edit_trace -i /home/user1/workload.trace -x 42 -J 12345 -U user2
+
+NOTE:  If supplying just the target jobid for a dependency, the dependency will be treated as "afterany."
+       Therefore, to specify other dependency types, the user can write out the full dependecy,
+       e.g. "edit_trace -E afterok:12345".
+NOTE:  To remove a dependency, reservation, partition or an account, provide a value that starts with a space,
+       e.g. 'edit_trace -E " "'  will clear the dependency field.
+
+
+        In addition to edit_trace, an older and much more restrictive command is "update_trace".
+This command only works on files called test.trace and only allows for the setting of a dependency or
+reservation for the given job (only operates on single jobs).  The edit_trace command above provides the
+same functionality and much more; hence, this command is superseded.
+
+        Usage: [This command is deprecated.  Use edit_trace]
+        update_trace [OPTIONS]
+              -R, --reservation           States to perform a reservation update
+              -D, --dependency            States to perform a dependency update
+              -n, --rsv_name     name     Name of reservation to use
+              -j, --jobid        jid      Select job 'jid' to modify
+              -r, --ref_jobid    rjid     Set 'rjid' as the target dependency
+              -a, --account
+              -h, --help                  This help message
+        Notes:  There are two general formats, one for a dependency update and one
+                for reservation updates.
+                update_trace [-D | --dependency] [-j | --jobid] [-r | --ref_jobid]>
+                      -- Or --
+                update_trace [-R | --reservation] [-n | --rsv_name] [-j | --jobid]
+                             [-a | --account]
+
+        Command needs to specify reservation or dependency action
+
+
+
+
+Example 1:
+        To update jobid 538330 to be dependent upon jobid 538321.
+                $ update_trace --dependency --jobid=538330 --ref_jobid=538321
+NOTE: All job dependencies are currently treated as being of type "afterany".
+
+Example 2:
+        To update the job record of test.trace with jobid of 538330 to belong to the "maint_reservation using account "test"
+                $ update_trace --reservation --jobid=538330 --rsv_name=maint_reservation --account=test
+
+
+
+Preparing the Slurm source code:
+--------------------------------
+* Download Slurm 15.08.6
+* Using the quilt command, apply the simulator patch
+* Copy the new files into the appropriate locations:
+        * Copy sim_events.h to .../src/slurmd/slurmd
+        * Copy sim_funcs.h, sim_funcs.c and slurm_sim.h to .../src/common
+        * Copy directory "simulator" to .../contribs
+
+
+Building the Slurm Simulator Source Code:
+-----------------------------------------
+        Assuming that you have already patched Slurm and placed the new files in the appropriate directories,
+the build process is essentially the same as usual with the following additions:
+        * export LIBS=-lrt
+        * export CFLAGS="-D SLURM_SIMULATOR"
+If running multiple slurmd's on single node, as always, remember to use the "--enable-multiple_slurmd" option
+to the Slurm configure script.
+
+        * Run the Slurm configure script (with all appropriate options as usual).
+        * Run make.
+        * Run make install
+        * cd the .../contribs/simulator directory
+        * Run make
+        * Run make install
+
