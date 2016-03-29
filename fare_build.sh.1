@@ -1,0 +1,93 @@
+OUT=fare_build.log
+ix=1
+
+if [ "x$2" = "x" ]
+then
+	echo "Usage: ${0} [slurm_dir to build] [installation dir]"
+	exit
+else
+	slurm_dir=${1}
+	install_dir=${2}
+fi
+if [ "x$3" = "xsim" ]
+then
+	echo "Building Slurm in Workload Simulator Mode."
+	config_opt=" --enable-simulator"
+else
+	config_opt=" "
+fi
+
+echo "slurm_dir = ${slurm_dir}"
+echo "install_dir = ${install_dir}"
+
+while [ -f ${OUT}.${ix} ]
+do
+	(( ix = ix + 1 ))
+done
+
+script -x
+(
+	cd $slurm_dir
+	echo "Executing: configure"
+	./configure							\
+		 --exec-prefix=${install_dir}/slurm_programs		\
+		 --bindir=${install_dir}/slurm_programs/bin		\
+		 --sbindir=${install_dir}/slurm_programs/sbin		\
+		 --datadir=${install_dir}/slurm_varios/share		\
+		 --includedir=${install_dir}/slurm_varios/include	\
+		 --libdir=${install_dir}/slurm_varios/lib		\
+		 --libexecdir=${install_dir}/slurm_varios/libexec	\
+		 --localstatedir=${install_dir}/slurm_varios		\
+		 --sharedstatedir=${install_dir}/slurm_varios		\
+		 --mandir=${install_dir}/slurm_varios/man		\
+		 --infodir=${install_dir}/slurm_varios/share/info	\
+		 --prefix=${install_dir}/slurm_programs			\
+		 --sysconfdir=${install_dir}/slurm_conf			\
+		 --localstatedir=${install_dir}/slurm_varios/var/	\
+		 --enable-pam						\
+		 --with-proctrack					\
+		 --with-ssl=${install_dir}/slurm_varios/lib/slurm	\
+		 --with-munge=/opt/munge/default			\
+		 --enable-front-end					\
+		 --with-mysql-config=/usr/bin/ ${config_opt}
+
+#		 --enable-simulator
+	
+	echo "Now compiling ... (It will take some minutes)"
+	make
+	echo "... and installing ..."
+	make install
+	
+	
+	# Let's check compilation and installation was successful
+	echo "Let's check compilation and installation was successful..."
+	
+	echo "${install_dir}/slurm_programs/sbin/slurmctld"
+	if [ -f "${install_dir}/slurm_programs/sbin/slurmctld" ]
+	then
+		echo "I got a slurmctld binary!"
+	else
+		echo "Something was wrong during slurm building"
+		exit
+	fi
+	
+	echo "It seems fine."
+	printf "\tNow you must also build/install the contribs/simulator directory.\n\n"
+	
+	printf "\tThere are some parameters in slurm_conf/slurm.conf to adjust before slurm can run:\n"
+	printf "\n\t\tSlurmUser\n"
+	printf "\n\t\tSlurmdUser\n"
+	printf "\n\t\tControlMachine\n"
+	printf "\n\t\tControlAddr\n"
+	printf "\n\t\tClusterName\n"
+	printf "\n\t\tFrontendName\n"
+	
+	printf "\n\t Also check slurm_conf/slurm.nodes and set NodeHostName and NodeAddr if they are wrong\n"
+	printf "\n\nDO NOT FORGET IT!\n\n"
+	
+	printf "\There are some parameters at slurm_conf/ to adjust before slurmdbd can run::\n"
+	printf "\n\t\tStorageUser\n"
+	printf "\n\t\tStoragePass\n"
+	printf "\n\t\tSlurmUser\n"
+	printf "\n\nDO NOT FORGET IT!\n\n"
+) 2>&1 | tee ${OUT}.${ix}

@@ -1,0 +1,111 @@
+<!--#include virtual="header.txt"-->
+
+<h1><a name="top">Slurm Plugin API</a></h1>
+<h2>Overview</h2>
+<p>A Slurm plugin is a dynamically linked code object which is loaded explicitly
+at run time by the Slurm libraries. A plugin provides a customized implementation
+of a well-defined API connected to tasks such as authentication, interconnect
+fabric, and task scheduling.</p>
+<h2>Identification</h2>
+<p>A Slurm plugin identifies itself by a short character string formatted similarly
+to a MIME type: <i>&lt;major&gt;/&lt;minor&gt;</i>. The major type identifies
+which API the plugin implements. The minor type uniquely distinguishes a plugin
+from other plugins that implement that same API, by such means as the intended
+platform or the internal algorithm. For example, a plugin to interface to the
+Maui scheduler would give its type as &quot;sched/maui.&quot; It would implement
+the Slurm Scheduler API.</p>
+
+<h2>Versioning</h2>
+<p>Slurm plugin version numbers comprise a major, minor and micro revision number.
+If the major and/or minor revision number changes, this indicates major changes
+to the Slurm functionality including changes to APIs, command options, and
+plugins.
+These plugin changes may include new functions and/or function arguments.
+If only the micro revision number changes, this is indicative of bug fixes
+and possibly minor enhancements which should not adversely impact users.
+In all cases, rebuilding and installing all Slurm plugins is recommended
+at upgrade time.
+Not all compute nodes in a cluster need be updated at the same time, but
+all Slurm APIs, commands, plugins, etc. on a compute node should represent
+the same version of Slurm.</p>
+
+<p class="footer"><a href="#top">top</a></p>
+
+<h2>Data Objects</h2>
+
+<p>A plugin must define and export the following symbols:</p>
+<ul>
+<li><span class="commandline">char plugin_type[]<br>
+</span> a unique, short, formatted string to identify the plugin's purpose as
+described above. A &quot;null&quot; plugin (i.e., one that implements the desired
+API as stubs) should have a minor type of &quot;none.&quot;</li>
+<li><span class="commandline">char plugin_name[]<br>
+</span> a free-form string that identifies the plugin in human-readable terms,
+such as &quot;Kerberos authentication.&quot; Slurm will use this string to identify
+the plugin to end users.</li>
+</ul>
+<p>A plugin may optionally define and export the following symbols:</p>
+<ul>
+<li>const uint32_t plugin_version<br>
+If specified, identifies the version of Slurm used to build this plugin and
+any attempt to load the plugin from a different version of Slurm will result
+in an error.
+If not specified, then the plugin may be loadeed by Slurm commands and
+daemons from any version, however this may result in difficult to diagnose
+failures due to changes in the arguments to plugin functions or changes
+in other Slurm functions used by the plugin.</p>
+</ul>
+<p class="footer"><a href="#top">top</a></p>
+
+<h2>API Functions in All Plugins</h2>
+<p class="commandline">int init (void);</p>
+<p style="margin-left:.2in"><b>Description</b>: If present, this function is called
+just after the plugin is loaded. This allows the plugin to perform any global
+initialization prior to any actual API calls.</p>
+<p style="margin-left:.2in"><b>Arguments</b>: None.</p>
+<p style="margin-left:.2in"><b>Returns</b>: SLURM_SUCCESS if the plugin's initialization
+was successful. Any other return value indicates to Slurm that the plugin should
+be unloaded and not used.</p>
+<p class="commandline">void fini (void);</p>
+<p style="margin-left:.2in"><b>Description</b>: If present, this function is called
+just before the plugin is unloaded. This allows the plugin to do any finalization
+after the last plugin-specific API call is made.</p>
+<p style="margin-left:.2in"><b>Arguments</b>: None.</p>
+<p style="margin-left:.2in"><b>Returns</b>: None.</p>
+<p><b>Note</b>: These init and fini functions are not the same as those
+described in the <span class="commandline">dlopen (3)</span> system library.
+The C run-time system co-opts those symbols for its own initialization.
+The system <span class="commandline">_init()</span> is called before the Slurm
+<span class="commandline">init()</span>, and the Slurm
+<span class="commandline">fini()</span> is called before the system's
+<span class="commandline">_fini()</span>.</p>
+<p>The functions need not appear. The plugin may provide either
+<span class="commandline">init()</span> or <span class="commandline">fini()</span> or both.</p>
+<p class="footer"><a href="#top">top</a></p>
+<h2>Thread Safety</h2>
+
+<p>Slurm is a multithreaded application. The Slurm plugin library may exercise
+the plugin functions in a re-entrant fashion. It is the responsibility of the
+plugin author to provide the necessarily mutual exclusion and synchronization
+in order to avoid the pitfalls of re-entrant code.</p>
+<h2>Run-time Support</h2>
+<p>The standard system libraries are available to the plugin. The Slurm libraries
+are also available and plugin authors are encouraged to make use of them rather
+than develop their own substitutes. Plugins should use the Slurm log to print
+error messages.</p>
+<p>The plugin author is responsible for specifying any specific non-standard libraries
+needed for correct operation. Plugins will not load if their dependent libraries
+are not available, so it is the installer's job to make sure the specified libraries
+are available.</p>
+<h2>Performance</h2>
+<p>All plugin functions are expected to execute very quickly. If any function
+entails delays (e.g. transactions with other systems), it should be written to
+utilize a thread for that functionality. This thread may be created by the
+<span class="commandline">init()</span> function and deleted by the
+<span class="commandline">fini()</span> functions. See <b>plugins/sched/backfill</b>
+for an example of how to do this.</p>
+<p class="footer"><a href="#top">top</a></p>
+
+<p style="text-align:center;">Last modified 27 March 2015</p>
+
+<!--#include virtual="footer.txt"-->

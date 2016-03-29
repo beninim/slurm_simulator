@@ -1,0 +1,212 @@
+<!--#include virtual="header.txt"-->
+
+<h1>Generic Resource (GRES) Scheduling</h1>
+
+<P>Generic resource (GRES) scheduling is supported through a flexible plugin
+mechanism. Support is currently provided for Graphics Processing Units (GPUs)
+and Intel&reg; Many Integrated Core (MIC) processors.</P>
+
+<!-------------------------------------------------------------------------->
+<h2>Configuration</h2>
+
+<P>Slurm supports no generic resources in the default configuration.
+One must explicitly specify which resources are to be managed in the
+<I>slurm.conf</I> configuration file. The configuration parameters of
+interest are:</P>
+
+<UL>
+<LI><B>GresTypes</B> a comma delimited list of generic resources to be
+managed (e.g. <I>GresTypes=gpu,mic</I>). This name may be that of an
+optional plugin providing additional control over the resources.</LI>
+<LI><B>Gres</B> the generic resource configuration details in the format<br>
+&lt;name&gt;[:&lt;type&gt;][:no_consume]:&lt;number&gt;[K|M|G]<br>
+The first field is the resource name, which matches the GresType configuration
+parameter name.
+The optional type field might be used to identify a model of that generic
+resource.
+A generic resource can also be specified as non-consumable (i.e. multiple
+jobs can use the same generic resource) with the optional field ":no_consume".
+The final field must specify a generic resource count.
+A suffix of "K", "M" or "G" may be used to multiply the count by 1024,
+1048576 or 1073741824 respectively.
+By default a node has no generic resources and its maximum count is
+4,294,967,295.</LI>
+</UL>
+
+<P>Note that the Gres specification for each node works in the same fashion
+as the other resources managed. Depending upon the value of the
+<I>FastSchedule</I> parameter, nodes which are found to have fewer resources
+than configured will be placed in a DOWN state.</P>
+
+<P>Note that the Gres specification is not supported on BlueGene systems.</P>
+
+<P>Sample slurm.conf file:</P>
+<PRE>
+# Configure support for our four GPUs
+GresTypes=gpu,bandwidth
+NodeName=tux[0-7] Gres=gpu:tesla:2,gpu:kepler:2,bandwidth:lustre:no_consume:4G
+</PRE>
+
+<P>Each compute node with generic resources must also contain a <I>gres.conf</I>
+file describing which resources are available on the node, their count, 
+associated device files and CPUs which should be used with those resources.
+The configuration parameters available are:</P>
+
+<UL>
+<LI><B>Name</B> name of a generic resource (must match <B>GresTypes</B>
+values in <I>slurm.conf</I> ).</LI>
+
+<LI><B>Count</B> Number of resources of this type available on this node.
+The default value is set to the number of <B>File</B> values specified (if any),
+otherwise the default value is one. A suffix of "K", "M" or "G" may be used
+to multiply the number by 1024, 1048576 or 1073741824 respectively
+(e.g. "Count=10G"). Note that Count is a 32-bit field and the maximum value
+is 4,294,967,295.</LI>
+
+<LI><B>CPUs</B>
+Specify the CPU index numbers for the specific CPUs which can
+use this resource.
+For example, it may be strongly preferable
+to use specific CPUs with specific devices (e.g. on a NUMA
+architecture). Multiple CPUs may be specified using a comma
+delimited list or a range may be specified using a "-" separator
+(e.g. "0,1,2,3" or "0-3").
+<B>If specified, then only the identified CPUs can be allocated with each
+generic resource; an attempt to use other CPUs will not be honored.</B>
+If not specified, then any CPU can be used with the resources.
+If any CPU can be effectively used with the resources, then do not specify the
+CPUs option for improved speed in the Slurm scheduling logic.
+
+<LI><B>File</B> Fully qualified pathname of the device files associated with a
+resource.
+The name can include a numeric range suffix to be interpreted by Slurm
+(e.g. <I>File=/dev/nvidia[0-3]</I>).
+This field is generally required if enforcement of generic resource
+allocations are to be supported (i.e. prevents a user from making
+use of resources allocated to a different user).
+Enforcement of the file allocation relies upon Linux Control Groups (cgroups)
+and Slurm's task/cgroup plugin, which will place the allocated files into
+the job's cgroup and prevent use of other files.
+Please see Slurm's <a href="cgroups.html">Cgroups Guide</a> for more
+information.<br>
+If File is specified then Count must be either set to the number
+of file names specified or not set (the default value is the number of files
+specified).
+NOTE: If you specify the File parameter for a resource on some node,
+the option must be specified on all nodes and Slurm will track the assignment
+of each specific resource on each node. Otherwise Slurm will only track a
+count of allocated resources rather than the state of each individual device
+file.</LI>
+
+<LI><B>Type</B> Optionally specify the device type. For example, this might
+be used to identify a specific model of GPU, which users can then specify
+in their job request.
+If <B>Type</B> is specified, then <B>Count</B> is limited in size (currently 1024).
+NOTE: This is a new capability added in Slurm version 14.11.</LI>
+</UL>
+
+<P>Sample gres.conf file:</P>
+<PRE>
+# Configure support for our four GPUs, plus bandwidth
+Name=gpu Type=tesla  File=/dev/nvidia0 CPUs=0,1
+Name=gpu Type=tesla  File=/dev/nvidia1 CPUs=0,1
+Name=gpu Type=kepler File=/dev/nvidia2 CPUs=2,3
+Name=gpu Type=kepler File=/dev/nvidia3 CPUs=2,3
+Name=bandwidth Type=lustre Count=4G
+</PRE>
+<!-------------------------------------------------------------------------->
+<h2>Running Jobs</h2>
+
+<P>Jobs will not be allocated any generic resources unless specifically
+requested at job submit time using the <I>--gres</I> option supported by
+the <I>salloc</I>, <I>sbatch</I> and <I>srun</I> commands. The option
+requires an argument specifying which generic resources are required and
+how many resources. The resource specification is of the form
+<I>name[:type:count]</I>. The <I>name</I> is the same name as
+specified by the <I>GresTypes</I> and <I>Gres</I> configuration parameters.
+<I>type</I> identifies a specific type of that generic resource (e.g. a
+specific model of GPU).
+<I>count</I> specifies how many resources are required and has a default
+value of 1. For example:<BR> 
+<I>sbatch --gres=gpu:kepler:2 ...</I>.</P>
+
+<P>Jobs will be allocated specific generic resources as needed to satisfy
+the request. If the job is suspended, those resources do not become available
+for use by other jobs.</P>
+
+<P>Job steps can be allocated generic resources from those allocated to the
+job using the <I>--gres</I> option with the <I>srun</I> command as described
+above. By default, a job step will be allocated all of the generic resources
+allocated to the job. If desired, the job step may explicitly specify a
+different generic resource count than the job.
+This design choice was based upon a scenario where each job executes many
+job steps. If job steps were granted access to all generic resources by
+default, some job steps would need to explicitly specify zero generic resource
+counts, which we considered more confusing. The job step can be allocated
+specific generic resources and those resources will not be available to other
+job steps. A simple example is shown below.</P>
+
+<PRE>
+#!/bin/bash
+#
+# gres_test.bash
+# Submit as follows:
+# sbatch --gres=gpu:4 -n4 -N1-1 gres_test.bash
+#
+srun --gres=gpu:2 -n2 --exclusive show_device.sh &
+srun --gres=gpu:1 -n1 --exclusive show_device.sh &
+srun --gres=gpu:1 -n1 --exclusive show_device.sh &
+wait
+</PRE>
+
+<!-------------------------------------------------------------------------->
+<h2>GPU Management</h2>
+
+<P>In the case of Slurm's GRES plugin for GPUs, the environment variable
+CUDA_VISIBLE_DEVICES is set for each job step to determine which GPUs are
+available for its use on each node. This environment variable is only set
+when tasks are launched on a specific compute node (no global environment
+variable is set for the <i>salloc</i> command and the environment variable set
+for the <i>sbatch</i> command only reflects the GPUs allocated to that job
+on that node, node zero of the allocation).
+CUDA version 3.1 (or higher) uses this environment
+variable in order to run multiple jobs or job steps on a node with GPUs
+and insure that the resources assigned to each are unique. In the example
+above, the allocated node may have four or more graphics devices. In that
+case, CUDA_VISIBLE_DEVICES will reference unique devices for each file and
+the output might resemble this:</P>
+
+<PRE>
+JobStep=1234.0 CUDA_VISIBLE_DEVICES=0,1
+JobStep=1234.1 CUDA_VISIBLE_DEVICES=2
+JobStep=1234.2 CUDA_VISIBLE_DEVICES=3
+</PRE>
+
+<P>NOTE: Be sure to specify the <I>File</I> parameters in the <I>gres.conf</I>
+file and insure they are in the increasing numeric order.</P>
+<!-------------------------------------------------------------------------->
+<h2>MIC Management</h2>
+
+<P>Slurm can be used to provide resource management for systems with the
+Intel&reg; Many Integrated Core (MIC) processor.
+Slurm sets an OFFLOAD_DEVICES environment variable, which controls the
+selection of MICs available to a job step.
+The OFFLOAD_DEVICES environment variable is used by both Intel
+LEO (Language Extensioins for Offload) and the MKL (Math Kernel Library)
+automatic offload.
+(This is very similar to how the CUDA_VISIBLE_DEVICES environment variable is
+used to control which GPUs can be used by CUDA&trade; software.)
+If no MICs are reserved via GRES, the OFFLOAD_DEVICES variable is set to
+-1. This causes the code to ignore the offload directives and run MKL
+routines on the CPU. The code will still run but only on the CPU. This
+also gives a somewhat cryptic warning:</P>
+<pre>offload warning: OFFLOAD_DEVICES device number -1 does not correspond
+to a physical device</pre>
+<P>The offloading is automatically scaled to all the devices, (e.g. if
+--gres=mic:2 is defined) then all offloads use two MICs unless
+explicitly defined in the offload pragmas.</P>
+<!-------------------------------------------------------------------------->
+
+<p style="text-align: center;">Last modified 4 December 2014</p>
+
+<!--#include virtual="footer.txt"-->
